@@ -1,0 +1,6 @@
+# Install the matching torch/torchaudio wheels first (see README).
+numpy==2.5.5
+PySide6-Essentials==6.12.0
+torch==2.8.0
+torchaudio==2.8.0
+transformers==4.57.6
