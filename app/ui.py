@@ -8,52 +8,31 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QFontDatabase
 from PySide6.QtWidgets import (
-    QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QFrame, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
-    QProgressBar, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
+    QBoxLayout, QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
+    QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from . import __version__
 from .alignment import LANGUAGES, Wav2VecAligner, cache_dir, check_language
 from .core import AUDIO, VIDEO, Cancellation, Cancelled, EngineError, Project, Style, validate_file
 from .jobs import Job, Result
-from .font_library import all_faces
 from .media import Media, MediaInfo, duration_warning
-from .preview import SubtitlePreview
 from .presets import BUILTINS, PresetStore
+from .preview import SubtitlePreview
 from .studio import StudioDialog
+from .theme import THEME_QSS, apply_theme
+from .widgets import (
+    ColorSwatchButton, SectionCard, StatusBadge, StudioMark, StyleSummaryStrip,
+    ensure_bundled_fonts, make_divider, make_label, set_prop,
+)
 
 LOG = logging.getLogger(__name__)
-THEME = """
-QWidget { color: #e5ebf6; background: #10141d; font-size: 13px; }
-QLabel { background: transparent; }
-QLabel#title { font-size: 26px; font-weight: 700; }
-QLabel#heading { font-size: 16px; font-weight: 700; }
-QLabel#mark { color: #ffd65a; font-size: 26px; }
-QFrame#card { background: #191f2d; border: 1px solid #2c374b; border-radius: 12px; }
-QFrame#card QWidget { background: transparent; }
-QFrame#card QPlainTextEdit, QFrame#card QComboBox, QFrame#card QSpinBox,
-QFrame#card QDoubleSpinBox, QPushButton {
-    background: #131a27; border: 1px solid #35435a; border-radius: 6px; padding: 7px;
-}
-QFrame#card QPushButton { background: #222d41; }
-QPushButton:hover, QFrame#card QPushButton:hover { border-color: #aebcdd; }
-QPushButton:disabled { color: #8792a5; }
-QPushButton#generate { background: #ffd65a; color: #1a170b; font-weight: 700; padding: 11px; }
-QPushButton#generate:disabled { background: #71643e; }
-QFrame#card QLabel#preview { background: #10141d; border: 1px solid #35435a; border-radius: 8px; }
-QComboBox QAbstractItemView { background: #191f2d; selection-background-color: #3b4763; }
-QProgressBar { border: 1px solid #35435a; border-radius: 4px; text-align: center; }
-QProgressBar::chunk { background: #ad8541; border-radius: 3px; }
-QScrollArea { border: none; }
-"""
+THEME = THEME_QSS
 
 
 def label(text: str, role: str = "") -> QLabel:
-    widget = QLabel(text, objectName=role)
-    widget.setWordWrap(True)
-    widget.setTextFormat(Qt.TextFormat.PlainText)
-    return widget
+    return make_label(text, role=role)
 
 
 def combo(*values: str) -> QComboBox:
@@ -69,29 +48,25 @@ def spin(low: int, high: int, value: int) -> QSpinBox:
     return widget
 
 
-def button(text: str, action: Callable) -> QPushButton:
+def button(text: str, action: Callable, variant: str = "", tooltip: str = "") -> QPushButton:
     widget = QPushButton(text)
+    if variant:
+        widget.setProperty("variant", variant)
+    if tooltip:
+        widget.setToolTip(tooltip)
+    widget.setCursor(Qt.CursorShape.PointingHandCursor)
     widget.clicked.connect(action)
     return widget
 
 
-def row(*widgets: QWidget) -> QWidget:
+def row(*widgets: QWidget, spacing: int = 8) -> QWidget:
     wrapper = QWidget()
     layout = QHBoxLayout(wrapper)
     layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(spacing)
     for widget in widgets:
         layout.addWidget(widget)
     return wrapper
-
-
-def card(parent: QVBoxLayout, title: str) -> QFormLayout:
-    frame = QFrame(objectName="card")
-    form = QFormLayout(frame)
-    form.setContentsMargins(15, 13, 15, 15)
-    form.setSpacing(9)
-    form.addRow(label(title, "heading"))
-    parent.addWidget(frame)
-    return form
 
 
 class Worker(QObject):
@@ -136,149 +111,328 @@ class MainWindow(QMainWindow):
         self.worker: Worker | None = None
         self.success: Callable = lambda _: None
         self.close_pending = False
+        self.classic_color_buttons: dict[str, ColorSwatchButton] = {}
+
         self.setWindowTitle("Karaoke Subtitle Engine · Creative Subtitle Studio")
-        self.resize(1030, 800)
-        self.setMinimumSize(710, 530)
-        self.setStyleSheet(THEME)
+        self.resize(1140, 770)
+        self.setMinimumSize(740, 460)
+        apply_theme(self)
 
         root = QWidget()
         self.setCentralWidget(root)
         shell = QVBoxLayout(root)
-        shell.setContentsMargins(24, 18, 24, 18)
-        shell.setSpacing(14)
-        header = QHBoxLayout()
-        header.addWidget(label("♫", "mark"))
-        header.addWidget(label("Karaoke Subtitle Engine", "title"), 1)
-        header.addWidget(label(f"v{__version__}"))
-        header.addWidget(button("Settings", self.toggle_settings))
-        shell.addLayout(header)
+        shell.setContentsMargins(0, 0, 0, 0)
+        shell.setSpacing(0)
+
+        shell.addWidget(self._build_header())
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         shell.addWidget(self.scroll, 1)
+
         content = QWidget()
         self.scroll.setWidget(content)
-        layout = QVBoxLayout(content)
+        workspace = QVBoxLayout(content)
+        workspace.setContentsMargins(20, 16, 20, 18)
+        workspace.setSpacing(14)
+
+        self.make_settings(workspace)
+
+        self.columns = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.columns.setContentsMargins(0, 0, 0, 0)
+        self.columns.setSpacing(14)
+        workspace.addLayout(self.columns, 1)
+
+        left_col = QVBoxLayout()
+        left_col.setContentsMargins(0, 0, 0, 0)
+        left_col.setSpacing(14)
+        right_col = QVBoxLayout()
+        right_col.setContentsMargins(0, 0, 0, 0)
+        right_col.setSpacing(14)
+
+        self.columns.addLayout(left_col, 7)
+        self.columns.addLayout(right_col, 5)
+
+        self.make_media(left_col)
+        self.make_script(left_col)
+        left_col.addStretch(1)
+
+        self.make_style(right_col)
+        self.make_output(right_col)
+        right_col.addStretch(1)
+
+        self._input_surfaces = [self.settings, self.media_card, self.script_card, self.studio_card]
+        shell.addWidget(self._build_footer())
+        self._update_columns_direction()
+
+    def _build_header(self) -> QFrame:
+        bar = QFrame(objectName="header_bar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(20, 11, 20, 11)
         layout.setSpacing(12)
-        self.inputs = QWidget()
-        layout.addWidget(self.inputs)
-        inputs = QVBoxLayout(self.inputs)
-        inputs.setContentsMargins(0, 0, 0, 0)
-        inputs.setSpacing(12)
-        self.make_settings(inputs)
-        self.make_media(inputs)
-        script = card(inputs, "Script")
-        self.editor = QPlainTextEdit()
-        self.editor.setPlaceholderText("Paste the exact words in the order they are spoken or sung.")
-        self.editor.setMinimumHeight(146)
-        self.editor.textChanged.connect(self.update_script)
-        self.counter = label("0 words · 0 characters")
-        self.language = QComboBox()
-        for code, item in LANGUAGES.items():
-            self.language.addItem(item.label, code)
-        script.addRow(self.editor)
-        script.addRow("Alignment language", self.language)
-        script.addRow(self.counter)
-        self.display_toggle = QCheckBox("Use separate display text")
-        self.display_editor = QPlainTextEdit()
-        self.display_editor.setPlaceholderText("One display word per spoken word. Hindi and English can be mixed.")
-        self.display_editor.setMaximumHeight(76)
-        self.display_toggle.toggled.connect(self.display_editor.setVisible)
-        script.addRow(self.display_toggle)
-        script.addRow(self.display_editor)
-        self.display_editor.hide()
-        self.make_style(inputs)
 
-        output = card(layout, "Output")
-        self.output_label = label("A verified export will appear here.")
-        self.output_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        output.addRow(self.output_label)
-        self.output_controls = row(
-            button("Play video", lambda: self.open_output("video")),
-            button("Open folder", lambda: self.open_output("folder")),
-            button("Alignment report", lambda: self.open_output("report")),
-            button("Generate another", self.reset),
-        )
-        self.output_controls.setEnabled(False)
-        output.addRow(self.output_controls)
-        layout.addStretch()
+        layout.addWidget(StudioMark(34))
+        titles = QVBoxLayout()
+        titles.setContentsMargins(0, 0, 0, 0)
+        titles.setSpacing(1)
+        titles.addWidget(make_label("Karaoke Subtitle Engine", role="title", wrap=False))
+        titles.addWidget(make_label("Creative Subtitle Studio", role="subtitle", wrap=False))
+        layout.addLayout(titles)
+        layout.addStretch(1)
 
-        self.generate = button("Generate Karaoke Video", self.start_job)
-        self.generate.setObjectName("generate")
-        self.cancel_button = button("Cancel", self.cancel)
-        self.cancel_button.setEnabled(False)
+        layout.addWidget(StatusBadge(f"v{__version__}", "neutral"))
+        self.settings_button = button("Settings", self.toggle_settings, variant="ghost",
+                                      tooltip="Configure encoding quality, alignment device, ASS export, and logs")
+        self.settings_button.setCheckable(True)
+        layout.addWidget(self.settings_button)
+        return bar
+
+    def _build_footer(self) -> QFrame:
+        bar = QFrame(objectName="footer_bar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(20, 12, 20, 12)
+        layout.setSpacing(14)
+
+        status_col = QVBoxLayout()
+        status_col.setContentsMargins(0, 0, 0, 0)
+        status_col.setSpacing(3)
+        status_eyebrow = make_label("STATUS", role="eyebrow", wrap=False)
+        self.status = make_label("Choose a video and enter its script.", role="muted")
+        self.status.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        status_col.addWidget(status_eyebrow)
+        status_col.addWidget(self.status)
+        layout.addLayout(status_col, 1)
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
-        self.status = label("Choose a video and enter its script.")
-        shell.addWidget(self.status)
-        shell.addWidget(row(self.generate, self.cancel_button, self.progress_bar))
+        self.progress_bar.setFixedWidth(210)
+        layout.addWidget(self.progress_bar)
+
+        self.cancel_button = button("Cancel", self.cancel, variant="danger",
+                                    tooltip="Cancel the active alignment or export task")
+        self.cancel_button.setEnabled(False)
+        self.generate = button("Generate Karaoke Video", self.start_job,
+                               tooltip="Align spoken words and render burned-in karaoke captions")
+        self.generate.setObjectName("generate")
+        layout.addWidget(self.cancel_button)
+        layout.addWidget(self.generate)
+        return bar
 
     def make_settings(self, parent: QVBoxLayout) -> None:
-        self.settings = QWidget()
-        nested = QVBoxLayout(self.settings)
-        nested.setContentsMargins(0, 0, 0, 0)
-        form = card(nested, "Export settings")
+        self.settings = SectionCard(
+            "Export & Engine Settings",
+            "Quality, hardware acceleration, standalone ASS output, and diagnostics.",
+        )
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(10)
+
         self.crf = spin(15, 29, 20)
+        self.crf.setToolTip("Lower values yield higher visual quality and larger MP4 files (default: 20).")
         self.device = combo("CPU", "Auto · NVIDIA CUDA when available")
-        self.save_ass = QCheckBox("Save ASS subtitles alongside the video")
-        form.addRow("Encoding quality (CRF)", self.crf)
-        form.addRow("Alignment device", self.device)
-        form.addRow(self.save_ass)
-        form.addRow(row(button("Open model folder", self.open_models),
-                        button("Open diagnostic log", lambda: self.open_path(self.log_path))))
+        self.device.setToolTip("Device used for acoustic forced alignment. FFmpeg encoding always runs on CPU.")
+        self.save_ass = QCheckBox("Save standalone .ass subtitle file alongside the video")
+
+        grid.addWidget(make_label("Encoding quality (CRF)", role="field"), 0, 0)
+        grid.addWidget(self.crf, 1, 0)
+        grid.addWidget(make_label("Alignment device", role="field"), 0, 1)
+        grid.addWidget(self.device, 1, 1)
+        grid.addWidget(self.save_ass, 2, 0, 1, 2)
+
+        actions = row(
+            button("Open Model Folder", self.open_models, tooltip="Open local acoustic model cache directory"),
+            button("Open Diagnostic Log", lambda: self.open_path(self.log_path),
+                   tooltip="Open rotating engine.log for troubleshooting"),
+        )
+        actions.layout().addStretch(1)
+        grid.addWidget(actions, 3, 0, 1, 2)
+
+        self.settings.body_layout.addLayout(grid)
         parent.addWidget(self.settings)
         self.settings.hide()
 
     def toggle_settings(self) -> None:
-        self.settings.setVisible(self.settings.isHidden())
-        if not self.settings.isHidden():
+        show = self.settings.isHidden()
+        self.settings.setVisible(show)
+        self.settings_button.setChecked(show)
+        if show:
             self.scroll.ensureWidgetVisible(self.settings)
 
     def make_media(self, parent: QVBoxLayout) -> None:
-        form = card(parent, "Media")
-        self.video_label = label("No video selected")
-        self.audio_label = label("Use audio from video")
-        self.folder_label = label("Same folder as the video")
-        form.addRow(button("Choose video", lambda: self.choose_media(False)), self.video_label)
-        form.addRow(row(button("Choose audio", lambda: self.choose_media(True)),
-                        button("Use video audio", self.clear_audio)), self.audio_label)
-        form.addRow(button("Output folder", self.choose_folder), self.folder_label)
+        self.media_card = SectionCard(
+            "Media & Audio Sources",
+            "Select your source video, optional replacement audio, sync offset, and output destination.",
+        )
+
+        # Video slot
+        self.video_slot = QFrame(objectName="media_slot")
+        self.video_slot.setProperty("populated", False)
+        v_layout = QVBoxLayout(self.video_slot)
+        v_layout.setContentsMargins(11, 8, 11, 8)
+        v_layout.setSpacing(4)
+        v_top = QHBoxLayout()
+        v_top.setSpacing(8)
+        v_top.addWidget(make_label("SOURCE VIDEO", role="eyebrow", wrap=False))
+        self.video_badge = StatusBadge("Required", "accent")
+        v_top.addWidget(self.video_badge)
+        v_top.addStretch(1)
+        v_top.addWidget(button("Choose Video…", lambda: self.choose_media(False),
+                               tooltip="Select an MP4, MOV, MKV, AVI, or WebM video"))
+        v_layout.addLayout(v_top)
+        self.video_label = make_label("No video selected", role="muted")
+        self.video_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        v_layout.addWidget(self.video_label)
+        self.media_card.body_layout.addWidget(self.video_slot)
+
+        # Audio & sync slot
+        self.audio_slot = QFrame(objectName="media_slot")
+        self.audio_slot.setProperty("populated", False)
+        a_layout = QVBoxLayout(self.audio_slot)
+        a_layout.setContentsMargins(11, 8, 11, 8)
+        a_layout.setSpacing(6)
+        a_top = QHBoxLayout()
+        a_top.setSpacing(8)
+        a_top.addWidget(make_label("AUDIO TRACK", role="eyebrow", wrap=False))
+        self.audio_badge = StatusBadge("Embedded", "neutral")
+        a_top.addWidget(self.audio_badge)
+        a_top.addStretch(1)
+        a_top.addWidget(button("Choose Audio…", lambda: self.choose_media(True),
+                               tooltip="Use a separate WAV, MP3, M4A, AAC, FLAC, or OGG track"))
+        self.clear_audio_btn = button("Use Video Audio", self.clear_audio, variant="ghost",
+                                      tooltip="Revert to the video's embedded audio track")
+        self.clear_audio_btn.setEnabled(False)
+        a_top.addWidget(self.clear_audio_btn)
+        a_layout.addLayout(a_top)
+
+        self.audio_label = make_label("Use audio from video", role="muted")
+        a_layout.addWidget(self.audio_label)
+
+        offset_row = QHBoxLayout()
+        offset_row.setSpacing(10)
+        offset_row.addWidget(make_label("Replacement audio offset", role="field", wrap=False))
         self.offset = QDoubleSpinBox()
         self.offset.setRange(-120, 120)
         self.offset.setDecimals(3)
         self.offset.setSingleStep(0.05)
         self.offset.setSuffix(" s")
         self.offset.setEnabled(False)
+        self.offset.setFixedWidth(120)
         self.offset.valueChanged.connect(self.update_sync)
-        self.sync_hint = label("")
-        form.addRow("Replacement audio offset", self.offset)
-        form.addRow(self.sync_hint)
+        offset_row.addWidget(self.offset)
+        offset_row.addStretch(1)
+        a_layout.addLayout(offset_row)
+
+        self.sync_hint = make_label("", role="hint")
+        a_layout.addWidget(self.sync_hint)
+        self.media_card.body_layout.addWidget(self.audio_slot)
+
+        # Output folder slot
+        folder_slot = QFrame(objectName="media_slot")
+        f_layout = QHBoxLayout(folder_slot)
+        f_layout.setContentsMargins(12, 9, 12, 9)
+        f_layout.setSpacing(10)
+        f_text = QVBoxLayout()
+        f_text.setSpacing(2)
+        f_text.addWidget(make_label("OUTPUT FOLDER", role="eyebrow", wrap=False))
+        self.folder_label = make_label("Same folder as the video", role="muted")
+        f_text.addWidget(self.folder_label)
+        f_layout.addLayout(f_text, 1)
+        f_layout.addWidget(button("Choose Folder…", self.choose_folder,
+                                  tooltip="Choose where exported MP4 and alignment JSON files are written"))
+        self.media_card.body_layout.addWidget(folder_slot)
+
+        parent.addWidget(self.media_card)
         self.update_sync()
 
+    def make_script(self, parent: QVBoxLayout) -> None:
+        self.counter = StatusBadge("0 words · 0 characters", "neutral")
+        self.script_card = SectionCard(
+            "Spoken Script",
+            "Enter the exact spoken or sung words in order. Separate caption paragraphs with a blank line.",
+            header_widget=self.counter,
+        )
+
+        self.editor = QPlainTextEdit()
+        self.editor.setPlaceholderText("Paste the exact words in the order they are spoken or sung…")
+        self.editor.setMinimumHeight(140)
+        self.editor.textChanged.connect(self.update_script)
+        self.script_card.body_layout.addWidget(self.editor)
+
+        lang_row = QHBoxLayout()
+        lang_row.setSpacing(10)
+        lang_row.addWidget(make_label("Alignment language", role="field", wrap=False))
+        self.language = QComboBox()
+        for code, item in LANGUAGES.items():
+            self.language.addItem(item.label, code)
+        self.language.setMinimumWidth(190)
+        lang_row.addWidget(self.language)
+        lang_row.addStretch(1)
+        self.script_card.body_layout.addLayout(lang_row)
+
+        display_panel = QFrame(objectName="sub_panel")
+        dp_layout = QVBoxLayout(display_panel)
+        dp_layout.setContentsMargins(12, 10, 12, 10)
+        dp_layout.setSpacing(8)
+        self.display_toggle = QCheckBox("Use separate display text")
+        self.display_toggle.setToolTip("Keep monolingual alignment while displaying mixed Hindi/English words.")
+        dp_layout.addWidget(self.display_toggle)
+        self.display_editor = QPlainTextEdit()
+        self.display_editor.setPlaceholderText(
+            "One display word per spoken word. Hindi and English can be mixed (e.g. हर word चमके)."
+        )
+        self.display_editor.setMaximumHeight(82)
+        self.display_toggle.toggled.connect(self.display_editor.setVisible)
+        dp_layout.addWidget(self.display_editor)
+        self.display_editor.hide()
+        self.script_card.body_layout.addWidget(display_panel)
+
+        parent.addWidget(self.script_card)
+
     def make_style(self, parent: QVBoxLayout) -> None:
-        form = card(parent, "Subtitle studio")
         self.store = PresetStore(cache_dir() / "subtitle-presets.json")
         self.studio_style = self.store.current
         self.preset_name = self.store.selected
-        self.style_label = label(self.preset_name)
-        self.studio_button = button("Open Creative Subtitle Studio", self.open_studio)
-        form.addRow(self.studio_button, self.style_label)
+        self.style_label = StatusBadge(self.preset_name, "accent")
+
+        self.studio_card = SectionCard(
+            "Creative Subtitle Studio",
+            "Customize presets, bilingual fonts, karaoke colours, outlines, and placement.",
+            header_widget=self.style_label,
+        )
+
+        self.style_summary = StyleSummaryStrip()
+        self.style_summary.update_style(self.preset_name, self.studio_style)
+        self.studio_card.body_layout.addWidget(self.style_summary)
+
+        self.studio_button = button("Open Creative Subtitle Studio", self.open_studio,
+                                    tooltip="Launch live frame-rendered subtitle styling workspace")
+        self.studio_button.setMinimumHeight(36)
+        self.studio_card.body_layout.addWidget(self.studio_button)
+
         if self.store.notice:
-            form.addRow(label(self.store.notice))
+            notice_box = QFrame(objectName="notice_bar")
+            nb_layout = QHBoxLayout(notice_box)
+            nb_layout.setContentsMargins(10, 8, 10, 8)
+            nb_layout.addWidget(make_label(self.store.notice, tone="warning"))
+            self.studio_card.body_layout.addWidget(notice_box)
+
+        self.studio_card.body_layout.addWidget(make_divider())
+
         self.classic = QCheckBox("Use classic V1 styling")
-        form.addRow(self.classic)
-        classic_panel = QWidget()
-        form.addRow(classic_panel)
+        self.classic.setToolTip("Switch to original V1 single-font ASS controls and system fonts.")
+        self.studio_card.body_layout.addWidget(self.classic)
+
+        classic_panel = QFrame(objectName="sub_panel")
+        self.studio_card.body_layout.addWidget(classic_panel)
         form = QFormLayout(classic_panel)
+        form.setContentsMargins(12, 12, 12, 12)
+        form.setSpacing(8)
         self.classic.toggled.connect(classic_panel.setVisible)
         self.classic.toggled.connect(self.studio_button.setDisabled)
         classic_panel.hide()
+
         self.colors = Style()
-        for face in all_faces():
-            try:
-                QFontDatabase.addApplicationFont(str(face.path()))
-            except EngineError as exc:
-                self.style_label.setText(str(exc))
+        ensure_bundled_fonts()
         fonts = QFontDatabase.families()
         self.font = combo(*(fonts or ["Sans Serif"]))
         if "Segoe UI" in fonts:
@@ -291,21 +445,91 @@ class MainWindow(QMainWindow):
         self.horizontal = combo("Left", "Center", "Right")
         self.horizontal.setCurrentIndex(1)
         self.vertical = combo("Bottom", "Middle", "Top")
+
         form.addRow("Font", self.font)
-        form.addRow("Size / words per line / margin", row(self.size, self.words, self.margin))
-        form.addRow("Outline / shadow", row(self.stroke, self.shadow))
-        form.addRow("Placement", row(self.horizontal, self.vertical))
-        form.addRow("Colors", row(*(button(title, lambda key=key: self.choose_color(key))
-                                   for title, key in (("Upcoming", "normal"), ("Active", "active"),
-                                                      ("Completed", "completed"), ("Outline", "outline")))))
+        form.addRow("Size / Words / Margin", row(self.size, self.words, self.margin, spacing=6))
+        form.addRow("Outline / Shadow", row(self.stroke, self.shadow, spacing=6))
+        form.addRow("Placement", row(self.horizontal, self.vertical, spacing=6))
+
+        color_grid = QGridLayout()
+        color_grid.setSpacing(6)
+        for index, (title, key) in enumerate((
+            ("Upcoming", "normal"),
+            ("Active", "active"),
+            ("Completed", "completed"),
+            ("Outline", "outline"),
+        )):
+            hex_val = getattr(self.colors, key)
+            btn = ColorSwatchButton(hex_val, f"{title}")
+            btn.clicked.connect(lambda checked=False, k=key: self.choose_color(k))
+            self.classic_color_buttons[key] = btn
+            color_grid.addWidget(btn, index // 2, index % 2)
+        color_wrap = QWidget()
+        color_wrap.setLayout(color_grid)
+        form.addRow("Colors", color_wrap)
+
         self.preview = SubtitlePreview()
         form.addRow(self.preview)
+
         for control in (self.font, self.horizontal, self.vertical):
             control.currentIndexChanged.connect(self.update_preview)
         self.language.currentIndexChanged.connect(self.update_language)
         for control in (self.size, self.margin, self.stroke, self.shadow):
             control.valueChanged.connect(self.update_preview)
         self.update_preview()
+
+        parent.addWidget(self.studio_card)
+
+    def make_output(self, parent: QVBoxLayout) -> None:
+        self.output_badge = StatusBadge("Awaiting Export", "neutral")
+        self.output_card = SectionCard(
+            "Verified Output",
+            "Exported MP4, alignment JSON report, and quick playback actions.",
+            header_widget=self.output_badge,
+        )
+
+        output_box = QFrame(objectName="sub_panel")
+        ob_layout = QVBoxLayout(output_box)
+        ob_layout.setContentsMargins(12, 10, 12, 10)
+        ob_layout.setSpacing(4)
+        self.output_label = make_label("A verified export will appear here.", role="muted")
+        self.output_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        ob_layout.addWidget(self.output_label)
+        self.output_card.body_layout.addWidget(output_box)
+
+        self.output_controls = QWidget()
+        oc_grid = QGridLayout(self.output_controls)
+        oc_grid.setContentsMargins(0, 0, 0, 0)
+        oc_grid.setSpacing(8)
+        oc_grid.addWidget(button("Play Video", lambda: self.open_output("video")), 0, 0)
+        oc_grid.addWidget(button("Open Folder", lambda: self.open_output("folder")), 0, 1)
+        oc_grid.addWidget(button("Alignment Report", lambda: self.open_output("report")), 1, 0)
+        oc_grid.addWidget(button("Generate Another", self.reset, variant="ghost"), 1, 1)
+        self.output_controls.setEnabled(False)
+        self.output_card.body_layout.addWidget(self.output_controls)
+
+        parent.addWidget(self.output_card)
+
+    def _set_inputs_enabled(self, enabled: bool) -> None:
+        for surface in self._input_surfaces:
+            surface.setEnabled(enabled)
+
+    def _set_status(self, message: str, tone: str = "muted") -> None:
+        self.status.setText(message)
+        set_prop(self.status, "tone", tone)
+
+    def _update_columns_direction(self) -> None:
+        direction = (
+            QBoxLayout.Direction.LeftToRight
+            if self.width() >= 880
+            else QBoxLayout.Direction.TopToBottom
+        )
+        if self.columns.direction() != direction:
+            self.columns.setDirection(direction)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_columns_direction()
 
     def open_studio(self) -> None:
         text = self.display_editor.toPlainText() if self.display_toggle.isChecked() else self.editor.toPlainText()
@@ -314,9 +538,11 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self.preset_name, self.studio_style = dialog.selected, dialog.style
             self.style_label.setText(self.preset_name)
+            self.style_summary.update_style(self.preset_name, self.studio_style)
         elif self.preset_name not in self.store.custom and self.preset_name not in BUILTINS:
             self.preset_name, self.studio_style = self.store.selected, self.store.current
             self.style_label.setText(self.preset_name)
+            self.style_summary.update_style(self.preset_name, self.studio_style)
         dialog.deleteLater()
 
     @Slot()
@@ -330,6 +556,11 @@ class MainWindow(QMainWindow):
         color = QColorDialog.getColor(QColor(getattr(self.colors, key)), self)
         if color.isValid():
             self.colors = replace(self.colors, **{key: color.name()})
+            btn = self.classic_color_buttons.get(key)
+            if btn is not None:
+                titles = {"normal": "Upcoming", "active": "Active",
+                          "completed": "Completed", "outline": "Outline"}
+                btn.set_swatch(color.name(), titles[key])
             self.update_preview()
 
     def subtitle_style(self) -> Style:
@@ -347,18 +578,23 @@ class MainWindow(QMainWindow):
     @Slot()
     def update_script(self) -> None:
         script = self.editor.toPlainText()
-        self.counter.setText(f"{len(script.split())} words · {len(script)} characters")
+        word_count = len(script.split())
+        self.counter.setText(f"{word_count} words · {len(script)} characters")
+        self.counter.set_tone("accent" if word_count else "neutral")
 
     @Slot()
     def update_sync(self) -> None:
         hint = "Positive values delay replacement audio. Negative values advance it."
+        tone = "hint"
         if self.video_info and self.audio_info:
             video, audio = self.video_info.video_duration, self.audio_info.audio_duration
             if video and audio:
                 warning = duration_warning(video, audio, self.offset.value())
                 if warning:
                     hint += "\n" + warning
+                    tone = "warning"
         self.sync_hint.setText(hint)
+        set_prop(self.sync_hint, "tone", tone)
 
     def choose_media(self, audio: bool) -> None:
         extensions = AUDIO if audio else VIDEO
@@ -384,14 +620,21 @@ class MainWindow(QMainWindow):
             if audio:
                 self.audio, self.audio_info = path, info
                 self.audio_label.setText(f"{path.name} · {info.audio_duration:.2f} s · {audio_desc}")
+                self.audio_badge.setText("Replacement")
+                self.audio_badge.set_tone("accent")
+                set_prop(self.audio_slot, "populated", True)
+                self.clear_audio_btn.setEnabled(True)
                 self.offset.setEnabled(True)
             else:
                 self.video, self.video_info = path, info
                 self.video_label.setText(f"{path.name} · {info.video_duration:.2f} s · "
                                          f"{info.width} × {info.height} · {info.fps:.2f} fps · "
                                          f"{info.video_codec} · {audio_desc}")
+                self.video_badge.setText("Ready")
+                self.video_badge.set_tone("success")
+                set_prop(self.video_slot, "populated", True)
             self.update_sync()
-            self.status.setText("Media ready.")
+            self._set_status("Media ready.", "success")
 
         self.start_task(inspect, accepted, "Inspecting media…", False)
 
@@ -399,7 +642,11 @@ class MainWindow(QMainWindow):
         self.audio = self.audio_info = None
         self.offset.setValue(0)
         self.offset.setEnabled(False)
+        self.clear_audio_btn.setEnabled(False)
         self.audio_label.setText("Use audio from video")
+        self.audio_badge.setText("Embedded")
+        self.audio_badge.set_tone("neutral")
+        set_prop(self.audio_slot, "populated", False)
         self.update_sync()
 
     def choose_folder(self) -> None:
@@ -436,6 +683,7 @@ class MainWindow(QMainWindow):
             )
             if choice != QMessageBox.StandardButton.Yes:
                 return
+
         def process(cancel: Cancellation, update: Callable[[int, str], None]) -> Result:
             if needs_model:
                 self.aligner.prepare(project.language, cancel, lambda text: update(-1, text))
@@ -459,9 +707,9 @@ class MainWindow(QMainWindow):
         self.worker.done.connect(self.thread.quit)
         self.thread.finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.finish_task)
-        self.status.setText(status)
+        self._set_status(status, "muted")
         self.progress_bar.setRange(0, 0)
-        self.inputs.setEnabled(False)
+        self._set_inputs_enabled(False)
         self.generate.setEnabled(False)
         self.cancel_button.setEnabled(cancellable)
         self.thread.start()
@@ -478,7 +726,7 @@ class MainWindow(QMainWindow):
         if self.close_pending:
             self.close()
             return
-        self.inputs.setEnabled(True)
+        self._set_inputs_enabled(True)
         self.generate.setEnabled(True)
         self.cancel_button.setEnabled(False)
         if self.progress_bar.maximum() == 0:
@@ -487,7 +735,7 @@ class MainWindow(QMainWindow):
 
     @Slot(int, str)
     def show_progress(self, percent: int, text: str) -> None:
-        self.status.setText(text)
+        self._set_status(text, "muted")
         self.progress_bar.setRange(0, 0 if percent < 0 else 100)
         if percent >= 0:
             self.progress_bar.setValue(percent)
@@ -497,11 +745,11 @@ class MainWindow(QMainWindow):
         if self.worker:
             self.worker.cancel.event.set()
             self.cancel_button.setEnabled(False)
-            self.status.setText("Cancelling after the current processing step…")
+            self._set_status("Cancelling after the current processing step…", "warning")
 
     @Slot(str)
     def error(self, message: str) -> None:
-        self.status.setText(message)
+        self._set_status(message, "error")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
 
@@ -512,8 +760,15 @@ class MainWindow(QMainWindow):
             detail += f"\n{len(result.issues) - 8} more entries in the alignment report."
         self.output_label.setText(str(result.video) + ("\n\n" + detail if detail else ""))
         self.output_controls.setEnabled(True)
-        self.status.setText("Video exported. Review the alignment report." if result.issues else "Video exported.")
-        self.scroll.ensureWidgetVisible(self.output_label)
+        if result.issues:
+            self.output_badge.setText("Review Report")
+            self.output_badge.set_tone("warning")
+            self._set_status("Video exported. Review the alignment report.", "warning")
+        else:
+            self.output_badge.setText("Verified")
+            self.output_badge.set_tone("success")
+            self._set_status("Video exported.", "success")
+        self.scroll.ensureWidgetVisible(self.output_card)
 
     def open_models(self) -> None:
         try:
@@ -536,15 +791,20 @@ class MainWindow(QMainWindow):
             return
         self.video = self.video_info = self.folder = self.output = None
         self.video_label.setText("No video selected")
+        self.video_badge.setText("Required")
+        self.video_badge.set_tone("accent")
+        set_prop(self.video_slot, "populated", False)
         self.folder_label.setText("Same folder as the video")
         self.clear_audio()
         self.editor.clear()
         self.display_editor.clear()
         self.display_toggle.setChecked(False)
         self.output_controls.setEnabled(False)
+        self.output_badge.setText("Awaiting Export")
+        self.output_badge.set_tone("neutral")
         self.output_label.setText("A verified export will appear here.")
         self.progress_bar.setValue(0)
-        self.status.setText("Choose a video and enter its script.")
+        self._set_status("Choose a video and enter its script.", "muted")
         self.editor.setFocus()
 
     def closeEvent(self, event) -> None:
