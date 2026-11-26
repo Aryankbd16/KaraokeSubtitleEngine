@@ -1,5 +1,6 @@
 # Install the matching torch/torchaudio wheels first (see README).
 numpy==2.5.5
+uharfbuzz==0.53.3
 PySide6-Essentials==6.12.0
 torch==2.8.0
 torchaudio==2.8.0
