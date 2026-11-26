@@ -10,4 +10,3 @@ Each family directory contains unmodified static TrueType faces and its upstream
 | Mukta | Girish Dalvi, Ek Type | [Google Fonts](https://github.com/google/fonts/tree/40cd5edf3831c9e0012b96345c476598595b9970/ofl/mukta) |
 | Hind | Indian Type Foundry | [Google Fonts](https://github.com/google/fonts/tree/40cd5edf3831c9e0012b96345c476598595b9970/ofl/hind) |
 | Tiro Devanagari Hindi | The Indigo Project Authors | [Google Fonts](https://github.com/google/fonts/tree/40cd5edf3831c9e0012b96345c476598595b9970/ofl/tirodevanagarihindi) |
-
