@@ -17,7 +17,8 @@ from . import __version__
 from .alignment import LANGUAGES, Wav2VecAligner, check_language
 from .core import AUDIO, VIDEO, Cancellation, Cancelled, EngineError, Project, Style, validate_file
 from .jobs import Job, Result
-from .media import FONT_DIR, Media, MediaInfo, duration_warning
+from .font_library import all_faces
+from .media import Media, MediaInfo, duration_warning
 from .preview import SubtitlePreview
 
 LOG = logging.getLogger(__name__)
@@ -246,8 +247,8 @@ class MainWindow(QMainWindow):
     def make_style(self, parent: QVBoxLayout) -> None:
         form = card(parent, "Subtitle style")
         self.colors = Style()
-        for font in FONT_DIR.glob("*.ttf"):
-            QFontDatabase.addApplicationFont(str(font))
+        for face in all_faces():
+            QFontDatabase.addApplicationFont(str(face.path()))
         fonts = QFontDatabase.families()
         self.font = combo(*(fonts or ["Sans Serif"]))
         if "Segoe UI" in fonts:

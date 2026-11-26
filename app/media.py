@@ -14,9 +14,10 @@ from pathlib import Path
 from typing import Callable
 
 from .core import Cancellation, EngineError
+from .font_library import stage_fonts
 
 LOG = logging.getLogger(__name__)
-FONT_DIR = Path(__file__).resolve().parent / "fonts"
+ASS_FILTER = "ass=captions.ass:fontsdir=fonts:shaping=complex"
 
 
 @dataclass(frozen=True)
@@ -194,13 +195,10 @@ class Media:
                   "-map", "0:a:0", "-af", audio_chain, "-t", f"{duration:.9f}",
                   "-c:a", "aac", "-q:a", "2", "track.m4a"],
                  cancel, cwd=work, timeout=max(120, duration * 3))
-        font_dir = work / "fonts"
-        font_dir.mkdir()
-        for font in FONT_DIR.glob("*.ttf"):
-            shutil.copyfile(font, font_dir / font.name)
+        stage_fonts(work)
         args = [self.ffmpeg, "-v", "error", "-nostats", "-progress", "progress.txt",
                 "-i", str(video.resolve()), "-map", "0:V:0",
-                "-vf", "setpts=PTS-STARTPTS,ass=captions.ass:fontsdir=fonts,"
+                "-vf", f"setpts=PTS-STARTPTS,{ASS_FILTER},"
                 "pad=ceil(iw/2)*2:ceil(ih/2)*2",
                 "-t", f"{duration:.9f}", "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                 "-pix_fmt", "yuv420p", "picture.mp4"]
