@@ -4,6 +4,7 @@ import math
 import unicodedata
 
 from .core import Style, Word
+from .styles import StudioStyle, advance, script_runs, shaped_font
 
 STOPS = (".", "!", "?", "।", "॥", "…")
 
@@ -16,6 +17,13 @@ def text_width(text: str) -> float:
 
 def phrases(words: list[Word], style: Style, width: int) -> list[list[list[Word]]]:
     budget = max(6, (width - 2 * style.margin) / style.size)
+    measure = text_width
+    if isinstance(style, StudioStyle):
+        faces = style.faces
+        budget = available_width(style, width) / style.size
+
+        def measure(text):
+            return sum(advance(faces[hindi], run) for hindi, run in script_runs(text))
     groups: list[list[list[Word]]] = []
     lines: list[list[Word]] = [[]]
     previous: Word | None = None
@@ -30,7 +38,7 @@ def phrases(words: list[Word], style: Style, width: int) -> list[list[list[Word]
             lines = [[]]
             line = lines[-1]
         candidate = " ".join(item.token.text for item in [*line, word])
-        if line and (len(line) >= style.words_per_line or text_width(candidate) > budget):
+        if line and (len(line) >= style.words_per_line or measure(candidate) > budget):
             if len(lines) == 2:
                 groups.append(lines)
                 lines = [[]]
@@ -67,10 +75,15 @@ def escape_text(text: str) -> str:
 
 def generate_ass(words: list[Word], style: Style, display_width: int,
                  display_height: int) -> str:
+    style.validate()
     height = 1080
     width = max(2, round(height * display_width / display_height))
     primary = ass_color(style.normal)
     outline = ass_color(style.outline)
+    style_line = (studio_definition(style) if isinstance(style, StudioStyle) else
+                  f"Style: Karaoke,{style.font},{style.size},{primary},{primary},{outline},"
+                  f"&H80000000,-1,0,0,0,100,100,0,0,1,{style.stroke},{style.shadow},"
+                  f"{style.horizontal + style.vertical},{style.margin},{style.margin},{style.margin},1")
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -80,12 +93,14 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Karaoke,{style.font},{style.size},{primary},{primary},{outline},&H80000000,-1,0,0,0,100,100,0,0,1,{style.stroke},{style.shadow},{style.horizontal + style.vertical},{style.margin},{style.margin},{style.margin},1
+{style_line}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     events: list[str] = []
+    if isinstance(style, StudioStyle):
+        return studio_ass(header, words, style, width, height)
     for layer, group in enumerate(phrases(words, style, width)):
         intervals = {id(word): (centiseconds(word.start), centiseconds(word.end))
                      for line in group for word in line
@@ -109,3 +124,94 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             text = r"\N".join(rows)
             events.append(f"Dialogue: {layer},{ass_time(start)},{ass_time(end)},Karaoke,,0,0,0,,{text}")
     return header + "\n".join(events) + "\n"
+
+def available_width(style: StudioStyle, width: int) -> float:
+    return max(1, min(width - 2 * min(style.margin, width // 4), width * style.width_percent / 100)
+               - 2 * (style.stroke + style.shadow + 4))
+
+
+def alpha(opacity: int) -> str:
+    return f"&H{round(255 * (1 - opacity / 100)):02X}&"
+
+
+def studio_definition(style: StudioStyle) -> str:
+    english = style.faces[0]
+    stroke = style.stroke if style.outline_enabled else 0
+    shadow = style.shadow if style.shadow_enabled else 0
+    def rgba(color, opacity=100):
+        return alpha(opacity)[:-1] + ass_color(color)[2:-1]
+
+    fields = [shaped_font(english).face.get_name(1), style.size, rgba(style.normal), rgba(style.active),
+              rgba(style.outline), rgba(style.shadow_color, style.shadow_opacity), -int(english.weight == 700),
+              -int(english.italic), 0, 0, 100, 100, 0, 0, 1, stroke, shadow,
+              style.horizontal + style.vertical, style.margin, style.margin, style.margin, 1]
+    return "Style: Karaoke," + ",".join(map(str, fields))
+
+
+def studio_ass(header: str, words: list[Word], style: StudioStyle, width: int, height: int) -> str:
+    faces = style.faces
+    stroke = style.stroke if style.outline_enabled else 0
+    shadow = style.shadow if style.shadow_enabled else 0
+    events = [header.rstrip()]
+    limit = available_width(style, width)
+    inset = min(style.margin, width // 4) + stroke + shadow + 4
+    x = (inset, width / 2, width - inset)[style.horizontal - 1]
+    line_height = style.size + 2 * stroke + shadow + 4
+
+    for index, group in enumerate(phrases(words, style, width)):
+        intervals = {word: (centiseconds(word.start), centiseconds(word.end))
+                     for line in group for word in line if word.start is not None and word.end is not None}
+        bounds = sorted({point for a, b in intervals.values() if a < b for point in (a, b)})
+        if len(bounds) < 2:
+            continue
+        top = style.margin
+        block_height = len(group) * line_height + (len(group) - 1) * style.line_gap
+        if style.vertical == 0:
+            top = height - style.margin - block_height
+        elif style.vertical == 3:
+            top = (height - block_height) / 2
+
+        def event(layer, a, b, text):
+            events.append(f"Dialogue: {index * 2 + layer},{ass_time(a)},{ass_time(b)},Karaoke,,0,0,0,,{text}")
+
+        for row_index, line in enumerate(group):
+            y = top + row_index * (line_height + style.line_gap)
+            runs = []
+            length = 0
+            previous_hindi = False
+            for word_index, word in enumerate(line):
+                word_runs = script_runs(word.token.text, previous_hindi)
+                for run_index, (hindi, run) in enumerate(word_runs):
+                    face = faces[hindi]
+                    parts = run + (" " if word_index < len(line) - 1 and
+                                   run_index == len(word_runs) - 1 else "")
+                    length += advance(face, parts) * style.size
+                    # DirectWrite/libass use the static face's legacy family (name ID 1).
+                    family = shaped_font(face).face.get_name(1)
+                    tags = rf"\fn{family}\b{face.weight}\i{int(face.italic)}"
+                    color = (style.hi_color if hindi else style.en_color) or style.normal
+                    runs.append((word, tags, color, escape_text(parts)))
+                    previous_hindi = hindi
+            scale = min(1, limit / max(1, length))
+            pos = rf"{{\an{3 + style.horizontal}\pos({x:.2f},{y + line_height / 2:.2f})\fscx{scale*100:.2f}}}"
+            if style.background:
+                box_width = min(limit, length) + 2 * (stroke + 4)
+                left = x - (style.horizontal - 1) * min(limit, length) / 2 - stroke - 4
+                drawing = (rf"{{\an7\pos({left:.2f},{y:.2f})\bord0\shad0\1c{ass_color(style.box_color)}"
+                           rf"\1a{alpha(style.box_opacity)}\p1}}m 0 0 l {round(box_width)} 0 "
+                           f"{round(box_width)} {round(line_height)} 0 {round(line_height)}")
+                event(0, bounds[0], bounds[-1], drawing)
+            points = bounds if style.karaoke else [bounds[0], bounds[-1]]
+            for start, end in zip(points, points[1:]):
+                pieces = [pos]
+                for word, tags, base_color, display in runs:
+                    color = base_color
+                    interval = intervals.get(word)
+                    if style.karaoke and interval and interval[0] < interval[1]:
+                        if interval[0] <= start < interval[1]:
+                            color = style.active
+                        elif style.color_completed and interval[1] <= start:
+                            color = style.completed
+                    pieces.append(rf"{{{tags}\1c{ass_color(color)}}}{display}")
+                event(1, start, end, "".join(pieces))
+    return "\n".join(events) + "\n"
