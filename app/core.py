@@ -142,6 +142,7 @@ class Project:
     crf: int = 20
     export_ass: bool = False
     device: str = "cpu"
+    display_script: str = ""
 
     def validate(self) -> list[Token]:
         validate_file(self.video, VIDEO)
@@ -154,4 +155,7 @@ class Project:
         if not 15 <= self.crf <= 29 or self.device not in {"cpu", "auto"}:
             raise EngineError("Invalid encoding quality or device.")
         self.style.validate()
-        return tokenize(self.script)
+        tokens = tokenize(self.script)
+        if self.display_script.strip() and len(tokenize(self.display_script)) != len(tokens):
+            raise EngineError("Display text needs one word for each word in the alignment script.")
+        return tokens

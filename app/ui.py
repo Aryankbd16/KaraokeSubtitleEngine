@@ -14,12 +14,14 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .alignment import LANGUAGES, Wav2VecAligner, check_language
+from .alignment import LANGUAGES, Wav2VecAligner, cache_dir, check_language
 from .core import AUDIO, VIDEO, Cancellation, Cancelled, EngineError, Project, Style, validate_file
 from .jobs import Job, Result
 from .font_library import all_faces
 from .media import Media, MediaInfo, duration_warning
 from .preview import SubtitlePreview
+from .presets import BUILTINS, PresetStore
+from .studio import StudioDialog
 
 LOG = logging.getLogger(__name__)
 THEME = """
@@ -123,6 +125,7 @@ class MainWindow(QMainWindow):
     def __init__(self, aligner: Wav2VecAligner, log_path: Path) -> None:
         super().__init__()
         self.aligner, self.log_path = aligner, log_path
+        self.job = None
         self.video: Path | None = None
         self.audio: Path | None = None
         self.folder: Path | None = None
@@ -133,7 +136,7 @@ class MainWindow(QMainWindow):
         self.worker: Worker | None = None
         self.success: Callable = lambda _: None
         self.close_pending = False
-        self.setWindowTitle("Karaoke Subtitle Engine")
+        self.setWindowTitle("Karaoke Subtitle Engine · Creative Subtitle Studio")
         self.resize(1030, 800)
         self.setMinimumSize(710, 530)
         self.setStyleSheet(THEME)
@@ -176,6 +179,14 @@ class MainWindow(QMainWindow):
         script.addRow(self.editor)
         script.addRow("Alignment language", self.language)
         script.addRow(self.counter)
+        self.display_toggle = QCheckBox("Use separate display text")
+        self.display_editor = QPlainTextEdit()
+        self.display_editor.setPlaceholderText("One display word per spoken word. Hindi and English can be mixed.")
+        self.display_editor.setMaximumHeight(76)
+        self.display_toggle.toggled.connect(self.display_editor.setVisible)
+        script.addRow(self.display_toggle)
+        script.addRow(self.display_editor)
+        self.display_editor.hide()
         self.make_style(inputs)
 
         output = card(layout, "Output")
@@ -245,10 +256,29 @@ class MainWindow(QMainWindow):
         self.update_sync()
 
     def make_style(self, parent: QVBoxLayout) -> None:
-        form = card(parent, "Subtitle style")
+        form = card(parent, "Subtitle studio")
+        self.store = PresetStore(cache_dir() / "subtitle-presets.json")
+        self.studio_style = self.store.current
+        self.preset_name = self.store.selected
+        self.style_label = label(self.preset_name)
+        self.studio_button = button("Open Creative Subtitle Studio", self.open_studio)
+        form.addRow(self.studio_button, self.style_label)
+        if self.store.notice:
+            form.addRow(label(self.store.notice))
+        self.classic = QCheckBox("Use classic V1 styling")
+        form.addRow(self.classic)
+        classic_panel = QWidget()
+        form.addRow(classic_panel)
+        form = QFormLayout(classic_panel)
+        self.classic.toggled.connect(classic_panel.setVisible)
+        self.classic.toggled.connect(self.studio_button.setDisabled)
+        classic_panel.hide()
         self.colors = Style()
         for face in all_faces():
-            QFontDatabase.addApplicationFont(str(face.path()))
+            try:
+                QFontDatabase.addApplicationFont(str(face.path()))
+            except EngineError as exc:
+                self.style_label.setText(str(exc))
         fonts = QFontDatabase.families()
         self.font = combo(*(fonts or ["Sans Serif"]))
         if "Segoe UI" in fonts:
@@ -276,6 +306,18 @@ class MainWindow(QMainWindow):
         for control in (self.size, self.margin, self.stroke, self.shadow):
             control.valueChanged.connect(self.update_preview)
         self.update_preview()
+
+    def open_studio(self) -> None:
+        text = self.display_editor.toPlainText() if self.display_toggle.isChecked() else self.editor.toPlainText()
+        dialog = StudioDialog(self.store, self.preset_name, self.studio_style, self.video,
+                              self.video_info, text, self)
+        if dialog.exec():
+            self.preset_name, self.studio_style = dialog.selected, dialog.style
+            self.style_label.setText(self.preset_name)
+        elif self.preset_name not in self.store.custom and self.preset_name not in BUILTINS:
+            self.preset_name, self.studio_style = self.store.selected, self.store.current
+            self.style_label.setText(self.preset_name)
+        dialog.deleteLater()
 
     @Slot()
     def update_language(self) -> None:
@@ -372,8 +414,10 @@ class MainWindow(QMainWindow):
             return
         project = Project(self.video, self.audio, self.editor.toPlainText(),
                           self.language.currentData(), self.folder or self.video.parent,
-                          self.subtitle_style(), self.offset.value(), self.crf.value(),
-                          self.save_ass.isChecked(), "cpu" if self.device.currentIndex() == 0 else "auto")
+                          self.subtitle_style() if self.classic.isChecked() else self.studio_style,
+                          self.offset.value(), self.crf.value(), self.save_ass.isChecked(),
+                          "cpu" if self.device.currentIndex() == 0 else "auto",
+                          self.display_editor.toPlainText() if self.display_toggle.isChecked() else "")
         try:
             check_language(project.language, project.validate())
             Media()
@@ -395,7 +439,9 @@ class MainWindow(QMainWindow):
         def process(cancel: Cancellation, update: Callable[[int, str], None]) -> Result:
             if needs_model:
                 self.aligner.prepare(project.language, cancel, lambda text: update(-1, text))
-            return Job(self.aligner).run(project, cancel, update)
+            if self.job is None:
+                self.job = Job(self.aligner)
+            return self.job.run(project, cancel, update)
 
         self.start_task(process, self.show_output, "Starting export…", True)
 
@@ -493,6 +539,8 @@ class MainWindow(QMainWindow):
         self.folder_label.setText("Same folder as the video")
         self.clear_audio()
         self.editor.clear()
+        self.display_editor.clear()
+        self.display_toggle.setChecked(False)
         self.output_controls.setEnabled(False)
         self.output_label.setText("A verified export will appear here.")
         self.progress_bar.setValue(0)
