@@ -49,4 +49,3 @@ def test_dialog_preview_and_recovery(tmp_path, monkeypatch):
     finally:
         if dialog.isVisible():
             dialog.reject()
-

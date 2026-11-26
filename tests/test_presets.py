@@ -17,6 +17,8 @@ def test_all_builtins_and_custom_lifecycle(tmp_path):
     store.change("apply", DEFAULT, style=style)
     assert not BUILTINS[DEFAULT].en_italic
     store.change("create", "गीत", style=style)
+    assert PresetStore(store.path).selected == DEFAULT
+    store.change("apply", "गीत", style=style)
     store.change("rename", "गीत", new_name="Poem")
     again = PresetStore(store.path)
     assert again.selected == "Poem" and again.current == again.custom["Poem"] == style
@@ -48,4 +50,3 @@ def test_invalid_entry_isolated_and_supported_weights_restored(tmp_path):
     path.write_text(json.dumps({"version": 1, "presets": {"Bad": {"size": True}, "Good": style}}))
     store = PresetStore(path)
     assert set(store.custom) == {"Good"} and store.notice
-

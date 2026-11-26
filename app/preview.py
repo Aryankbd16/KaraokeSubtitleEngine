@@ -67,20 +67,28 @@ class SubtitlePreview(QWidget):
 def render_frame(work, video, info, style, sample, cancel):
     """Cache one source frame for the dialog lifetime. The sample clock is independent of seek time."""
     media = Media()
-    frame = work / "source.png"
+    frame = work / "source.mkv"
     size = info.display_size if info else (960, 540)
     if video and info and not frame.exists():
         # Decode one native-resolution frame, including the video's display rotation.
         for seconds in (min(30, (info.video_duration or 0) * .35), 0):
-            media.run([media.ffmpeg, "-v", "error", "-y", "-ss", str(seconds), "-i", str(video.resolve()),
-                       "-map", "0:V:0", "-frames:v", "1", "source.tmp.png"], cancel, cwd=work)
-            pending = work / "source.tmp.png"
+            try:
+                media.run([media.ffmpeg, "-v", "error", "-y", "-abort_on", "empty_output", "-ss", str(seconds),
+                           "-i", str(video.resolve()), "-map", "0:V:0", "-frames:v", "1", "-c:v", "ffv1",
+                           "source.tmp.mkv"], cancel, cwd=work)
+            except Cancelled:
+                raise
+            except EngineError:
+                if seconds == 0:
+                    raise
+                continue
+            pending = work / "source.tmp.mkv"
             if pending.exists() and pending.stat().st_size:
                 pending.replace(frame)
                 break
         if not frame.exists():
             raise EngineError("No preview frame could be decoded from this video.")
-    source = ["-i", "source.png"] if frame.exists() else ["-f", "lavfi", "-i", "color=0x263344:s=960x540"]
+    source = ["-i", frame.name] if frame.exists() else ["-f", "lavfi", "-i", "color=0x263344:s=960x540"]
     words = [Word(token, i * .4, i * .4 + .36) for i, token in enumerate(tokenize(sample))]
     (work / "captions.ass").write_text(generate_ass(words, style, *size), encoding="utf-8")
     stage_fonts(work, style.faces)
@@ -170,4 +178,3 @@ class FramePreview(QWidget):
             self.cancel.event.set()
         self.pool.shutdown(wait=True, cancel_futures=True)
         self.directory.cleanup()
-

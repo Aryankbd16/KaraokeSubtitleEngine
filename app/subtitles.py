@@ -4,7 +4,7 @@ import math
 import unicodedata
 
 from .core import Style, Word
-from .styles import StudioStyle, advance, script_runs
+from .styles import StudioStyle, advance, script_runs, shaped_font
 
 STOPS = (".", "!", "?", "।", "॥", "…")
 
@@ -38,7 +38,7 @@ def phrases(words: list[Word], style: Style, width: int) -> list[list[list[Word]
             lines = [[]]
             line = lines[-1]
         candidate = " ".join(item.token.text for item in [*line, word])
-        if line and (len(line) >= style.words_per_line or text_width(candidate) > budget):
+        if line and (len(line) >= style.words_per_line or measure(candidate) > budget):
             if len(lines) == 2:
                 groups.append(lines)
                 lines = [[]]
@@ -80,6 +80,10 @@ def generate_ass(words: list[Word], style: Style, display_width: int,
     width = max(2, round(height * display_width / display_height))
     primary = ass_color(style.normal)
     outline = ass_color(style.outline)
+    style_line = (studio_definition(style) if isinstance(style, StudioStyle) else
+                  f"Style: Karaoke,{style.font},{style.size},{primary},{primary},{outline},"
+                  f"&H80000000,-1,0,0,0,100,100,0,0,1,{style.stroke},{style.shadow},"
+                  f"{style.horizontal + style.vertical},{style.margin},{style.margin},{style.margin},1")
     header = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: {width}
@@ -89,7 +93,7 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Karaoke,{style.font},{style.size},{primary},{primary},{outline},&H80000000,-1,0,0,0,100,100,0,0,1,{style.stroke},{style.shadow},{style.horizontal + style.vertical},{style.margin},{style.margin},{style.margin},1
+{style_line}
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -130,19 +134,25 @@ def alpha(opacity: int) -> str:
     return f"&H{round(255 * (1 - opacity / 100)):02X}&"
 
 
+def studio_definition(style: StudioStyle) -> str:
+    english = style.faces[0]
+    stroke = style.stroke if style.outline_enabled else 0
+    shadow = style.shadow if style.shadow_enabled else 0
+    def rgba(color, opacity=100):
+        return alpha(opacity)[:-1] + ass_color(color)[2:-1]
+
+    fields = [shaped_font(english).face.get_name(1), style.size, rgba(style.normal), rgba(style.active),
+              rgba(style.outline), rgba(style.shadow_color, style.shadow_opacity), -int(english.weight == 700),
+              -int(english.italic), 0, 0, 100, 100, 0, 0, 1, stroke, shadow,
+              style.horizontal + style.vertical, style.margin, style.margin, style.margin, 1]
+    return "Style: Karaoke," + ",".join(map(str, fields))
+
+
 def studio_ass(header: str, words: list[Word], style: StudioStyle, width: int, height: int) -> str:
     faces = style.faces
     stroke = style.stroke if style.outline_enabled else 0
     shadow = style.shadow if style.shadow_enabled else 0
-    # The base style also describes the caption when inspected in an ASS editor.
-    fields = [style.font, style.size, ass_color(style.normal), ass_color(style.active),
-              ass_color(style.outline), "&H" + alpha(style.shadow_opacity)[2:4] +
-              ass_color(style.shadow_color)[2:-1], -1 if faces[0].weight >= 700 else 0,
-              -1 if faces[0].italic else 0, 0, 0, 100, 100, 0, 0, 1, stroke, shadow,
-              style.horizontal + style.vertical, style.margin, style.margin, style.margin, 1]
-    base = "Style: Karaoke," + ",".join(str(value).rstrip("&") for value in fields)
-    header = "\n".join(base if line.startswith("Style: Karaoke,") else line for line in header.splitlines())
-    events = [header]
+    events = [header.rstrip()]
     limit = available_width(style, width)
     inset = min(style.margin, width // 4) + stroke + shadow + 4
     x = (inset, width / 2, width - inset)[style.horizontal - 1]
@@ -176,7 +186,9 @@ def studio_ass(header: str, words: list[Word], style: StudioStyle, width: int, h
                     parts = run + (" " if word_index < len(line) - 1 and
                                    run_index == len(word_runs) - 1 else "")
                     length += advance(face, parts) * style.size
-                    tags = rf"\fn{face.family}\b{face.weight}\i{int(face.italic)}"
+                    # DirectWrite/libass use the static face's legacy family (name ID 1).
+                    family = shaped_font(face).face.get_name(1)
+                    tags = rf"\fn{family}\b{face.weight}\i{int(face.italic)}"
                     color = (style.hi_color if hindi else style.en_color) or style.normal
                     runs.append((word, tags, color, escape_text(parts)))
                     previous_hindi = hindi
@@ -203,4 +215,3 @@ def studio_ass(header: str, words: list[Word], style: StudioStyle, width: int, h
                     pieces.append(rf"{{{tags}\1c{ass_color(color)}}}{display}")
                 event(1, start, end, "".join(pieces))
     return "\n".join(events) + "\n"
-

@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from functools import lru_cache
 import re
+import struct
 import unicodedata
 
 import uharfbuzz as hb
@@ -44,6 +45,7 @@ class StudioStyle(Style):
                 raise EngineError("Choose valid subtitle colors.")
         for face in self.faces:
             face.path()
+            shaped_font(face)
 
     @property
     def faces(self) -> tuple[Face, Face]:
@@ -73,7 +75,21 @@ def script_runs(text: str, default_hindi: bool = False):
 
 @lru_cache(maxsize=32)
 def shaped_font(face: Face) -> hb.Font:
-    return hb.Font(hb.Face(face.path().read_bytes()))
+    data = hb.Face(face.path().read_bytes())
+    family = data.get_name(16) or data.get_name(1)
+    metadata = data.reference_table("OS/2").data
+    if (family != face.family or len(metadata) < 78 or data.glyph_count < 2
+            or struct.unpack_from(">H", metadata, 4)[0] != face.weight
+            or bool(struct.unpack_from(">H", metadata, 62)[0] & 1) != face.italic):
+        raise EngineError(f"Invalid bundled face {face.filename}. Restore the original font file.")
+    return hb.Font(data)
+
+
+@lru_cache(maxsize=32)
+def ass_font_height(face: Face) -> int:
+    # libass set_font_metrics uses OS/2 usWinAscent + usWinDescent for these static TTFs.
+    table = shaped_font(face).face.reference_table("OS/2").data
+    return sum(struct.unpack_from(">HH", table, 74))
 
 
 @lru_cache(maxsize=8192)
@@ -83,7 +99,7 @@ def advance(face: Face, text: str) -> float:
     buffer.add_str(text)
     buffer.guess_segment_properties()
     hb.shape(font, buffer)
+    if any(glyph.codepoint == 0 for glyph in buffer.glyph_infos):
+        raise EngineError(f"{face.family} has no glyph for part of “{text}”. Choose another family or edit the display text.")
     # libass scales FreeType's real font height to ASS fontsize.
-    metrics = font.get_font_extents("ltr")
-    return sum(p.x_advance for p in buffer.glyph_positions) / (metrics.ascender - metrics.descender)
-
+    return sum(p.x_advance for p in buffer.glyph_positions) / ass_font_height(face)

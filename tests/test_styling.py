@@ -4,7 +4,7 @@ import pytest
 
 from app.core import EngineError, Word, tokenize
 from app.styles import StudioStyle, script_runs
-from app.subtitles import generate_ass
+from app.subtitles import generate_ass, phrases
 
 
 def test_mixed_style_intervals_and_escaping():
@@ -14,7 +14,7 @@ def test_mixed_style_intervals_and_escaping():
                         hi_color="#112233", en_color="#654321", background=True,
                         shadow_color="#345678", shadow_opacity=80)
     ass = generate_ass(words, style, 720, 1280)
-    assert r"\fnTiro Devanagari Hindi\b400\i1" in ass and r"\fnNoto Sans\b600\i0" in ass
+    assert r"\fnTiro Devanagari Hindi\b400\i1" in ass and r"\fnNoto Sans SemiBold\b600\i0" in ass
     assert r"\1c&H332211&" in ass and r"\1c&H214365&" in ass
     assert r"\1c&H57DBFF&" in ass and r"\1c&HD8C5B9&" in ass
     assert r"\1a&H66&\p1" in ass and "&H33785634" in ass
@@ -36,3 +36,12 @@ def test_static_two_line_layout_and_validation():
     with pytest.raises(EngineError):
         generate_ass(words, replace(style, width_percent=0), 1280, 720)
 
+
+def test_wrap_uses_shaped_advances_and_rejects_missing_glyph():
+    style = StudioStyle(size=64, margin=0, width_percent=90)
+    def layout(script):
+        return phrases([Word(token, i, i + .9) for i, token in enumerate(tokenize(script))], style, 400)
+    assert len(layout("iiiiii iiiiii")[0]) == 1
+    assert len(layout("WWWWWW WWWWWW")[0]) == 2
+    with pytest.raises(EngineError, match="no glyph"):
+        generate_ass([Word(tokenize("hello🦩")[0], 0, 1)], style, 400, 720)

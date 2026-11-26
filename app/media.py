@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from .core import Cancellation, EngineError
-from .font_library import stage_fonts
+from .font_library import Face, stage_fonts
 
 LOG = logging.getLogger(__name__)
 ASS_FILTER = "ass=captions.ass:fontsdir=fonts:shaping=complex"
@@ -184,7 +184,7 @@ class Media:
 
     def render(self, video: Path, audio: Path | None, offset: float, duration: float,
                crf: int, work: Path, cancel: Cancellation,
-               progress: Callable[[float], None]) -> Path:
+               progress: Callable[[float], None], *, faces: tuple[Face, ...] | None = None) -> Path:
         audio_chain = "asetpts=PTS-STARTPTS"
         if offset > 0:
             audio_chain += f",adelay={round(offset * 48000)}S:all=1"
@@ -195,7 +195,7 @@ class Media:
                   "-map", "0:a:0", "-af", audio_chain, "-t", f"{duration:.9f}",
                   "-c:a", "aac", "-q:a", "2", "track.m4a"],
                  cancel, cwd=work, timeout=max(120, duration * 3))
-        stage_fonts(work)
+        stage_fonts(work, faces)
         args = [self.ffmpeg, "-v", "error", "-nostats", "-progress", "progress.txt",
                 "-i", str(video.resolve()), "-map", "0:V:0",
                 "-vf", f"setpts=PTS-STARTPTS,{ASS_FILTER},"

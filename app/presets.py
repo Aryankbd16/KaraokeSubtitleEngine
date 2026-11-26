@@ -76,7 +76,12 @@ class PresetStore:
             selected = data.get("selected")
             if isinstance(selected, str) and (selected in BUILTINS or selected in self.custom):
                 self.selected = selected
-            self.current = decode_style(data.get("current", {}))
+            default_style = (BUILTINS | self.custom)[self.selected]
+            try:
+                self.current = decode_style(data.get("current", asdict(default_style)))
+            except (TypeError, ValueError, EngineError):
+                self.current = default_style
+                self.notice = "The saved style was invalid. The selected preset was restored."
         except FileNotFoundError:
             pass
         except (OSError, ValueError, TypeError, EngineError, RecursionError):
@@ -104,12 +109,13 @@ class PresetStore:
                 if operation in ("update", "rename", "delete") and name not in custom:
                     raise EngineError("Only an existing custom preset can be changed.")
                 if operation in ("create", "update", "apply"):
-                    current = decode_style(asdict(style))
-                    if operation != "apply":
-                        custom[name] = current
+                    snapshot = decode_style(asdict(style))
+                    if operation == "apply":
+                        selected, current = name, snapshot
+                    else:
+                        custom[name] = snapshot
                     if name not in custom and name not in BUILTINS:
                         raise EngineError("The selected preset no longer exists.")
-                    selected = name
                 elif operation == "rename":
                     custom[new_name] = custom.pop(name)
                     selected = new_name if selected == name else selected
@@ -133,4 +139,3 @@ class PresetStore:
                 lock.unlock()
         except OSError as exc:
             raise EngineError(f"Could not save presets in {self.path.parent}.") from exc
-

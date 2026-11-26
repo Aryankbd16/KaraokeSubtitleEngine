@@ -12,6 +12,7 @@ from .alignment import Aligner, LANGUAGES, check_language
 from .core import Cancellation, EngineError, Project, presentation, tokenize
 from .media import Media, duration_warning
 from .subtitles import centiseconds, generate_ass
+from .styles import StudioStyle
 
 
 @dataclass(frozen=True)
@@ -127,7 +128,8 @@ class Job:
             rendered = self.media.render(
                 project.video, project.audio, offset, duration, project.crf, work, cancel,
                 lambda seconds: progress(min(98, 70 + int(max(0, seconds) / duration * 28)),
-                                         "Rendering karaoke video")
+                                         "Rendering karaoke video"),
+                **({"faces": project.style.faces} if isinstance(project.style, StudioStyle) else {}),
             )
             cancel.check()
             artifacts = {".alignment.json": report}

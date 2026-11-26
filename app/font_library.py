@@ -69,4 +69,3 @@ def stage_fonts(work: Path, faces=None) -> None:
             os.link(source, target)
         except OSError:
             shutil.copyfile(source, target)
-

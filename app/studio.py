@@ -249,4 +249,3 @@ class StudioDialog(QDialog):
     def done(self, result):
         self.preview.shutdown()
         super().done(result)
-

@@ -31,4 +31,3 @@ def test_face_resolution(tmp_path):
     assert face.weight == 400 and face.italic
     with pytest.raises(EngineError, match="Missing bundled font"):
         face.path(tmp_path)
-
