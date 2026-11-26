@@ -1,10 +1,17 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QWidget
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
-from .core import Style
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
+
+from .core import Cancellation, Cancelled, EngineError, Style, Word, tokenize
+from .font_library import stage_fonts
+from .media import ASS_FILTER, Media
+from .subtitles import generate_ass
 
 
 class SubtitlePreview(QWidget):
@@ -56,3 +63,118 @@ class SubtitlePreview(QWidget):
                 painter.strokePath(path, outline)
             painter.fillPath(path, QColor(color))
             x += word_width + advance
+
+def render_frame(work, video, info, style, sample, cancel):
+    """Cache one source frame for the dialog lifetime. The sample clock is independent of seek time."""
+    media = Media()
+    frame = work / "source.mkv"
+    size = info.display_size if info else (960, 540)
+    if video and info and not frame.exists():
+        # Decode one native-resolution frame, including the video's display rotation.
+        for seconds in (min(30, (info.video_duration or 0) * .35), 0):
+            try:
+                media.run([media.ffmpeg, "-v", "error", "-y", "-abort_on", "empty_output", "-ss", str(seconds),
+                           "-i", str(video.resolve()), "-map", "0:V:0", "-frames:v", "1", "-c:v", "ffv1",
+                           "source.tmp.mkv"], cancel, cwd=work)
+            except Cancelled:
+                raise
+            except EngineError:
+                if seconds == 0:
+                    raise
+                continue
+            pending = work / "source.tmp.mkv"
+            if pending.exists() and pending.stat().st_size:
+                pending.replace(frame)
+                break
+        if not frame.exists():
+            raise EngineError("No preview frame could be decoded from this video.")
+    source = ["-i", frame.name] if frame.exists() else ["-f", "lavfi", "-i", "color=0x263344:s=960x540"]
+    words = [Word(token, i * .4, i * .4 + .36) for i, token in enumerate(tokenize(sample))]
+    (work / "captions.ass").write_text(generate_ass(words, style, *size), encoding="utf-8")
+    stage_fonts(work, style.faces)
+    # Apply ASS at source resolution before fitting the still into the preview panel.
+    ratio = size[0] / size[1]
+    h = max(1, round(min(540, 920 / ratio)))
+    w = max(1, round(h * ratio))
+    timestamp = .52 if len(words) > 1 else .12
+    return media.run([media.ffmpeg, "-v", "error", *source, "-frames:v", "1", "-vf",
+                      f"setpts=PTS-STARTPTS+{timestamp}/TB,{ASS_FILTER},scale={w}:{h},setsar=1",
+                      "-c:v", "png", "-f", "image2pipe", "-"], cancel, cwd=work)
+
+
+class FramePreview(QWidget):
+    def __init__(self, video, info):
+        super().__init__()
+        self.video, self.info = video, info
+        self.picture = QLabel("Preparing preview…")
+        self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.picture.setMinimumSize(200, 160)
+        self.picture.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.picture, 1)
+        layout.addWidget(self.status)
+        self.original = QPixmap()
+        self.directory = TemporaryDirectory(prefix="karaoke-preview-")
+        self.pool = ThreadPoolExecutor(max_workers=1)
+        self.future = self.cancel = self.pending = None
+        self.timer = QTimer(self, singleShot=True, interval=220)
+        self.timer.timeout.connect(self.start)
+        self.poll = QTimer(self, interval=40)
+        self.poll.timeout.connect(self.finish)
+
+    def request(self, style, sample):
+        self.pending = style, sample
+        if self.cancel:
+            self.cancel.event.set()
+        self.timer.start()
+
+    def start(self):
+        if self.future or self.pending is None:
+            return
+        style, sample = self.pending
+        self.pending = None
+        self.cancel = Cancellation()
+        self.future = self.pool.submit(render_frame, Path(self.directory.name), self.video, self.info,
+                                       style, sample, self.cancel)
+        self.status.setText("Rendering sample…")
+        self.poll.start()
+
+    def finish(self):
+        if not self.future.done():
+            return
+        self.poll.stop()
+        try:
+            data = self.future.result()
+            if self.pending is None:
+                pixmap = QPixmap()
+                if not pixmap.loadFromData(data, "PNG"):
+                    raise EngineError("FFmpeg returned an unreadable preview.")
+                self.original = pixmap
+                self.fit()
+                self.status.setText("Selected video" if self.video else "Sample background")
+        except Cancelled:
+            pass
+        except Exception as exc:
+            self.status.setText(f"Preview unavailable. {exc}")
+        self.future = self.cancel = None
+        if not self.timer.isActive():
+            self.start()
+
+    def fit(self):
+        if not self.original.isNull():
+            self.picture.setPixmap(self.original.scaled(self.picture.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                                                        Qt.TransformationMode.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fit()
+
+    def shutdown(self):
+        self.timer.stop()
+        self.poll.stop()
+        if self.cancel:
+            self.cancel.event.set()
+        self.pool.shutdown(wait=True, cancel_futures=True)
+        self.directory.cleanup()

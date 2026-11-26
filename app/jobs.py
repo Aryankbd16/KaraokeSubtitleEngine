@@ -4,14 +4,15 @@ import json
 import os
 import shutil
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from .alignment import Aligner, LANGUAGES, check_language
-from .core import Cancellation, EngineError, Project, presentation
+from .core import Cancellation, EngineError, Project, presentation, tokenize
 from .media import Media, duration_warning
 from .subtitles import centiseconds, generate_ass
+from .styles import StudioStyle
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,8 @@ class Job:
     def __init__(self, aligner: Aligner, media: Media | None = None) -> None:
         self.aligner = aligner
         self.media = media or Media()
+        self._alignment_key = None
+        self._alignment = ()
 
     def run(self, project: Project, cancel: Cancellation,
             progress: Callable[[int, str], None]) -> Result:
@@ -75,13 +78,22 @@ class Job:
             raise EngineError("The selected output folder is not writable.") from exc
         with directory as work_directory:
             work = Path(work_directory)
-            progress(15, "Preparing alignment audio")
-            wav = work / "alignment.wav"
-            self.media.extract(source, wav, audio.audio_duration, cancel)
-            if warning:
-                progress(25, warning)
-            aligned = self.aligner.align(wav, tokens, project.language, project.device,
-                                         cancel, lambda msg: progress(-1, msg))
+            stat = source.stat()
+            key = (source.resolve(), stat.st_size, stat.st_mtime_ns, project.language,
+                   project.script, project.device)
+            if self._alignment_key == key:
+                progress(60, "Reusing word timings")
+                aligned = self._alignment
+            else:
+                progress(15, "Preparing alignment audio")
+                wav = work / "alignment.wav"
+                self.media.extract(source, wav, audio.audio_duration, cancel)
+                if warning:
+                    progress(25, warning)
+                aligned = self.aligner.align(wav, tokens, project.language, project.device,
+                                             cancel, lambda msg: progress(-1, msg))
+                cancel.check()
+                self._alignment_key, self._alignment = key, tuple(aligned)
             cancel.check()
             words = presentation(aligned, offset, duration)
             if not any(w.start is not None and w.end is not None
@@ -90,7 +102,11 @@ class Job:
                                   "language, audio quality and offset.")
             progress(65, "Building karaoke captions")
             captions = work / "captions.ass"
-            captions.write_text(generate_ass(words, project.style, *video.display_size),
+            display = words
+            if project.display_script.strip():
+                display = [replace(word, token=token) for word, token in
+                           zip(words, tokenize(project.display_script), strict=True)]
+            captions.write_text(generate_ass(display, project.style, *video.display_size),
                                 encoding="utf-8")
             report = work / "alignment.json"
             issues = [f"{word.token.text}: {word.issue}" for word in words if word.issue]
@@ -112,7 +128,8 @@ class Job:
             rendered = self.media.render(
                 project.video, project.audio, offset, duration, project.crf, work, cancel,
                 lambda seconds: progress(min(98, 70 + int(max(0, seconds) / duration * 28)),
-                                         "Rendering karaoke video")
+                                         "Rendering karaoke video"),
+                **({"faces": project.style.faces} if isinstance(project.style, StudioStyle) else {}),
             )
             cancel.check()
             artifacts = {".alignment.json": report}

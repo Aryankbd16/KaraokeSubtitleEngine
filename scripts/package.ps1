@@ -2,12 +2,12 @@ $ErrorActionPreference = 'Stop'
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
     & .\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onedir --windowed `
-        --name KaraokeSubtitleEngine --paths . --add-data 'app/fonts:app/fonts' `
+        --name KaraokeSubtitleStudio --paths . --add-data 'app/fonts:app/fonts' `
         --collect-submodules transformers.models.wav2vec2 --exclude-module tkinter `
         --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.QtWebEngineCore `
         --exclude-module pandas --exclude-module matplotlib scripts/desktop_entry.py
     if ($LASTEXITCODE) { throw "PyInstaller failed with exit code $LASTEXITCODE." }
-    $bundle = Join-Path $PWD 'dist/KaraokeSubtitleEngine'
+    $bundle = Join-Path $PWD 'dist/KaraokeSubtitleStudio'
     # Qt uses Windows' ICU. A private ICU found on the build host may shadow
     # the Windows DLL with an incompatible export table.
     foreach ($name in @('icuuc.dll', 'icuin.dll')) {
@@ -18,7 +18,7 @@ try {
         $tool = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
         if ($tool) { Write-Host "$name available on PATH. The package uses the installed copy." }
     }
-    $app = Join-Path $bundle 'KaraokeSubtitleEngine.exe'
+    $app = Join-Path $bundle 'KaraokeSubtitleStudio.exe'
     $process = Start-Process -FilePath $app -ArgumentList '--smoke' -PassThru -WindowStyle Hidden
     if (-not $process.WaitForExit(60000)) {
         $process.Kill()
