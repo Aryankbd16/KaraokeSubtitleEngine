@@ -6,12 +6,13 @@ from tempfile import TemporaryDirectory
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from .core import Cancellation, Cancelled, EngineError, Style, Word, tokenize
 from .font_library import stage_fonts
 from .media import ASS_FILTER, Media
 from .subtitles import generate_ass
+from .widgets import make_label, set_prop
 
 
 class SubtitlePreview(QWidget):
@@ -19,7 +20,7 @@ class SubtitlePreview(QWidget):
         super().__init__()
         self.style = Style()
         self.words = ("Every", "word", "shines")
-        self.setMinimumHeight(125)
+        self.setMinimumHeight(138)
         self.setAccessibleName("Subtitle style preview")
 
     def show_style(self, style: Style, words: tuple[str, str, str]) -> None:
@@ -31,9 +32,17 @@ class SubtitlePreview(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         area = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        painter.setPen(QPen(QColor("#35435a")))
-        painter.setBrush(QColor("#10141d"))
+        painter.setPen(QPen(QColor("#283348")))
+        painter.setBrush(QColor("#090C12"))
         painter.drawRoundedRect(area, 8, 8)
+
+        # Subtle title-safe frame indicator
+        safe = area.adjusted(10, 10, -10, -10)
+        safe_pen = QPen(QColor(255, 255, 255, 16))
+        safe_pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(safe_pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(safe, 4, 4)
 
         style = self.style
         scale = min(0.5, self.width() / 1300)
@@ -63,6 +72,7 @@ class SubtitlePreview(QWidget):
                 painter.strokePath(path, outline)
             painter.fillPath(path, QColor(color))
             x += word_width + advance
+
 
 def render_frame(work, video, info, style, sample, cancel):
     """Cache one source frame for the dialog lifetime. The sample clock is independent of seek time."""
@@ -110,11 +120,24 @@ class FramePreview(QWidget):
         self.picture.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.picture.setMinimumSize(200, 160)
         self.picture.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
-        self.status = QLabel()
-        self.status.setWordWrap(True)
+        self.picture.setStyleSheet("color: #8B97AF; background: transparent;")
+
+        self.status = make_label("", role="hint")
+        size = info.display_size if info else (960, 540)
+        self.dimensions = make_label(f"{size[0]} × {size[1]}", role="mono", wrap=False)
+
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 2)
+        layout.setSpacing(8)
         layout.addWidget(self.picture, 1)
-        layout.addWidget(self.status)
+
+        meta = QHBoxLayout()
+        meta.setContentsMargins(4, 0, 4, 2)
+        meta.setSpacing(10)
+        meta.addWidget(self.status, 1)
+        meta.addWidget(self.dimensions)
+        layout.addLayout(meta)
+
         self.original = QPixmap()
         self.directory = TemporaryDirectory(prefix="karaoke-preview-")
         self.pool = ThreadPoolExecutor(max_workers=1)
@@ -139,6 +162,7 @@ class FramePreview(QWidget):
         self.future = self.pool.submit(render_frame, Path(self.directory.name), self.video, self.info,
                                        style, sample, self.cancel)
         self.status.setText("Rendering sample…")
+        set_prop(self.status, "tone", "muted")
         self.poll.start()
 
     def finish(self):
@@ -154,10 +178,12 @@ class FramePreview(QWidget):
                 self.original = pixmap
                 self.fit()
                 self.status.setText("Selected video" if self.video else "Sample background")
+                set_prop(self.status, "tone", "success" if self.video else "muted")
         except Cancelled:
             pass
         except Exception as exc:
             self.status.setText(f"Preview unavailable. {exc}")
+            set_prop(self.status, "tone", "warning")
         self.future = self.cancel = None
         if not self.timer.isActive():
             self.start()

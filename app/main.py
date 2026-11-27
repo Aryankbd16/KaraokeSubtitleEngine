@@ -31,11 +31,13 @@ def main() -> int:
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
+    from .theme import apply_theme
     from .ui import MainWindow
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName("Karaoke Subtitle Engine")
     app.setStyle("Fusion")
+    apply_theme(app)
     aligner = Wav2VecAligner()
     window = MainWindow(aligner, configure_logging())
     window.show()
