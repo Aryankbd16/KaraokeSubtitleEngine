@@ -6,7 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QDesktopServices, QFontDatabase
+from PySide6.QtGui import QColor, QDesktopServices, QFontDatabase, QWheelEvent
 from PySide6.QtWidgets import (
     QBoxLayout, QCheckBox, QColorDialog, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QFrame, QGridLayout, QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPlainTextEdit,
@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .alignment import LANGUAGES, Wav2VecAligner, cache_dir, check_language
+from .alignment import LANGUAGES, ScriptMismatchError, Wav2VecAligner, cache_dir, check_language
 from .core import AUDIO, VIDEO, Cancellation, Cancelled, EngineError, Project, Style, validate_file
 from .jobs import Job, Result
 from .media import Media, MediaInfo, duration_warning
@@ -69,6 +69,12 @@ def row(*widgets: QWidget, spacing: int = 8) -> QWidget:
     return wrapper
 
 
+class AlignmentLanguageCombo(QComboBox):
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        # Let the surrounding workspace scroll without changing the language.
+        event.ignore()
+
+
 class Worker(QObject):
     result = Signal(object)
     problem = Signal(str)
@@ -111,6 +117,7 @@ class MainWindow(QMainWindow):
         self.worker: Worker | None = None
         self.success: Callable = lambda _: None
         self.close_pending = False
+        self._showing_script_mismatch = False
         self.classic_color_buttons: dict[str, ColorSwatchButton] = {}
 
         self.setWindowTitle("Karaoke Subtitle Engine · Creative Subtitle Studio")
@@ -361,7 +368,7 @@ class MainWindow(QMainWindow):
         lang_row = QHBoxLayout()
         lang_row.setSpacing(10)
         lang_row.addWidget(make_label("Alignment language", role="field", wrap=False))
-        self.language = QComboBox()
+        self.language = AlignmentLanguageCombo()
         for code, item in LANGUAGES.items():
             self.language.addItem(item.label, code)
         self.language.setMinimumWidth(190)
@@ -515,8 +522,13 @@ class MainWindow(QMainWindow):
             surface.setEnabled(enabled)
 
     def _set_status(self, message: str, tone: str = "muted") -> None:
+        self._showing_script_mismatch = False
         self.status.setText(message)
         set_prop(self.status, "tone", tone)
+
+    def _clear_script_mismatch(self) -> None:
+        if self._showing_script_mismatch:
+            self._set_status("Generate again to check the script.")
 
     def _update_columns_direction(self) -> None:
         direction = (
@@ -547,6 +559,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def update_language(self) -> None:
+        self._clear_script_mismatch()
         hindi_font = "Noto Sans Devanagari"
         if self.font.currentText() in {self.default_font, hindi_font}:
             self.font.setCurrentText(hindi_font if self.language.currentData() == "hi" else self.default_font)
@@ -577,6 +590,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def update_script(self) -> None:
+        self._clear_script_mismatch()
         script = self.editor.toPlainText()
         word_count = len(script.split())
         self.counter.setText(f"{word_count} words · {len(script)} characters")
@@ -672,6 +686,7 @@ class MainWindow(QMainWindow):
                 raise EngineError("This video has no audio stream. Choose replacement audio.")
         except EngineError as exc:
             self.error(str(exc))
+            self._showing_script_mismatch = isinstance(exc, ScriptMismatchError)
             return
         needs_model = not self.aligner.ready(project.language)
         if needs_model:

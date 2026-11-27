@@ -45,6 +45,10 @@ LANGUAGES = {
 }
 
 
+class ScriptMismatchError(EngineError):
+    """The spoken script is incompatible with the selected alignment language."""
+
+
 def check_language(language: str, tokens: list[Token]) -> None:
     if language not in LANGUAGES:
         raise EngineError("Choose English or Hindi in Devanagari.")
@@ -56,8 +60,8 @@ def check_language(language: str, tokens: list[Token]) -> None:
     else:
         compatible = all("\u0900" <= c <= "\u097f" for c in letters)
     if not compatible:
-        raise EngineError(f"Use {LANGUAGES[language].script} script for this language. "
-                          "Romanized Hindi and mixed-script alignment are unavailable.")
+        raise ScriptMismatchError(f"Use {LANGUAGES[language].script} script for this language. "
+                                  "Romanized Hindi and mixed-script alignment are unavailable.")
 
 
 def cache_dir() -> Path:
